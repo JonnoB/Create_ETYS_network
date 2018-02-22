@@ -5,12 +5,11 @@ date: "11 September 2017"
 output: html_document
 ---
 
-
-Key Code elements
-
-- Monte carlo that takes different grid images and simulates with them
-
 Just under 20 node attacks an hour
+
+
+Create a function that takes two networks and finds the jaccard similarity after a cascade/attack. It is interesting to know is the proportionally loaded networks collapse in a more simmilar way to each other than to the actual line limits.
+
 
 The goal of this script is to create graph objects that contain all the necessary information resulting in the manipulation of graphs performing most of the cleaning.
 
@@ -19,7 +18,7 @@ The hope is that this will make the processes and code more simple and easier to
 
 This work is simmilar to Wang et al "An Electrical Betweenness approach for vulnerability assement of power grids considering the capacity of generators and load"
 
-Changing the assement metrix to loss of load and removing 20% of nodes e.g about 200.
+Changing the assement metric to loss of load and removing 20% of nodes e.g about 200.
 
 
 
@@ -259,12 +258,78 @@ DeleteEdges <-RandomAttack(gbase, Target = "Edges", Number = ecount(gbase))
 FixedNodes <- quo(FixedStrategyAttack(g, DeleteNodes))
 FixedEdges <- quo(FixedStrategyAttack(g, DeleteEdges, Target = "Edges"))
 
+g <- PowerFlow(gbase, "FECK40")
 
-testattack <- AttackTheGrid(list(list(gbase)), FixedNodes, MinMaxComp = 0, TotalAttackRounds = 10, CascadeMode = TRUE) 
-ExtractNetworkStats(testattack)
+testattack <- AttackTheGrid(list(list(g)), FixedNodes, MinMaxComp = 0, TotalAttackRounds = 10, CascadeMode = TRUE)
 
 #extract the number of nodes in the last of each list, precursor to finding the deleted node
  NodesTargeted(testattack)
+
+#dataframe of load profiles
+LoadProfiles <- 1:10 %>% map(
+  ~data_frame(name = get.vertex.attribute(g, "name"), Demand=  get.vertex.attribute(g, "Demand" )) %>%
+    setNames(c("name", paste0("Demand", .x))) ) %>%
+  Reduce(function(...) merge(..., by='name', all.x=TRUE), .)
+
+#attack across mutliple load profiles... in this case the load profile is the same
+setwd(basewd)
+testres <- MultiAttack(g, LoadProfiles,
+            AttackStrategy = RandomAttack,
+                           Type = "Fixed",
+                           MinMaxComp = 0.0, 
+                           TotalAttackRounds = 15,
+                           Target = "Nodes",
+                           CascadeMode = FALSE,
+                           SaveGridList = "test",
+                           cores = 1)
+
+
+test <- ExtractNetworkStats(testattack)
+ExtractNetworkStats(wtf)
+
+Alphalevels <- c(1.05, 1.20, 1.5, 2, 3, 5) 
+
+#a list of networks that have proportional loading
+AlphaNets <-Alphalevels  %>% map(~
+  ProportionalLimits(gbase, alpha = .x)
+) %>% setNames(paste0("Alpha", Alphalevels))
+  
+
+AlphaNets %>% map(~get.edge.attribute(.x, "Link.Limit")) %>%
+  setNames(paste0("Alpha", Alphalevels)) %>%
+  bind_cols()
+
+
+g2 <- ProportionalLimits(g)
+
+test <- data_frame(base = get.edge.attribute(g, "Link.Limit"), alpha1.05 = get.edge.attribute(g2, "Link.Limit"))
+
+
+test<- 1:2%>%
+  map(~MultiAttack(list(g2, gbase)[[.x]], LoadProfiles,
+                           AttackStrategy = RandomAttack,
+                           Type = "Fixed",
+                           MinMaxComp = 0.0, 
+                           TotalAttackRounds = 15,
+                           Target = "Nodes",
+                           CascadeMode = TRUE,
+                           SaveGridList =c("Alpha105", "Base")[.x],
+                           cores = 7)
+    )
+
+
+# Error in { : task 2 failed - "Invalid vertex names" 
+#I think this can only be debugged by adding in a "fixed" random node removal. then I can see which one is causing the error and find out why it is happening
+setwd(basewd)
+testres <- MultiAttack(g2, LoadProfiles,
+            AttackStrategy = RandomAttack,
+                           Type = "Fixed",
+                           MinMaxComp = 0.0, 
+                           TotalAttackRounds = 15,
+                           Target = "Nodes",
+                           CascadeMode = FALSE,
+                           SaveGridList = "test",
+                           cores = 7)
 
 ```
 
@@ -387,9 +452,9 @@ In certain cases you can see that edges get removed in cascade even when they ar
 set.seed(1234)
 
 input <- c(TRUE,FALSE)
-
+g <- PowerFlow(gbase, "FECK40")
   Nodesims <- input %>% map(~{ 
-    MonteCarloAttack(gbase, 
+    MonteCarloAttack(g, 
                            simulations = 100,
                            AttackStrategy = RandomAttack,
                            Type = "Fixed",
@@ -397,7 +462,23 @@ input <- c(TRUE,FALSE)
                            TotalAttackRounds = 150,
                            Target = "Nodes",
                            CascadeMode = .x,
-                           cores = 7)
+                           cores = 3)
+    
+
+    }
+   ) %>% set_names(paste0("v.", input))
+  
+  
+  Nodesims <- input %>% map(~{ 
+    MonteCarloAttack(g, 
+                           simulations = 100,
+                           AttackStrategy = RandomAttack,
+                           Type = "Fixed",
+                           MinMaxComp = 0.0, 
+                           TotalAttackRounds = 150,
+                           Target = "Nodes",
+                           CascadeMode = .x,
+                           cores = 3)
     
 
     }
@@ -411,49 +492,45 @@ SummaryofGC <- Nodesims %>%
     modify_depth(., 1, keep, is.data.frame ) %>%
   flatten %>%
   bind_rows() %>% 
-  SummariseMonteCarlo
+  SummariseMonteCarlo %>%
+  mutate(PercNum = NodesAttacked/958)
 
-SummaryofGC %>%
-  mutate(PercNum = NodesAttacked/958) %>%
-  #filter(ID<50) %>%
-ggplot(aes(x= PercNum, y = mean, colour = Cascade)) +geom_line() +
-    geom_ribbon(aes(ymin=GC05, ymax=GC95, fill = Cascade), alpha = 0.3)+
-  labs(title = "Largest componant as a % of Original Giant Component\n under different removal regimes" , x = "Percentage of nodes removed from Grid", y = "Drop in size of Largest component as % GC") + 
-  scale_x_continuous(labels=scales::percent) + 
-  scale_y_continuous(labels=scales::percent) 
-ggsave(file.path(FiguresFolder, "GCNodeRemoval150.pdf"))
 
-SummaryofGC %>%
-    mutate(PercNum = NodesAttacked/958) %>%
-  #  filter(ID<50) %>% set.vertex.attribute(., "OldDegree", value = degree(.))
-ggplot(aes(x= PercNum, y = mPGfract, colour = Cascade)) +geom_line() +
-      geom_ribbon(aes(ymin=PG05, ymax=PG95, fill = Cascade), alpha = 0.3)+
-      labs(title = "Comparing blackout size cascading vs topological edgevattacks" , x = "Percentage of nodes removed from Grid", y = "Blackout size as a percent of total generation") + 
-  scale_x_continuous(labels=scales::percent) + 
-  scale_y_continuous(labels=scales::percent) 
+NodeCollapse <- rbind(SummaryofGC %>%
+  select(PercNum, mean, Cascade, GC05, GC95) %>% mutate(type = "Giant componant size reduction"),
+SummaryofGC %>% 
+  select(PercNum, mPGfract, Cascade, PG05, PG95) %>% mutate(type = "Blackout size") %>%
+  rename(mean = mPGfract, GC05 = PG05, GC95 = PG95)
+) %>% mutate(Target = "Node")
 
-ggsave(file.path(FiguresFolder, "BlackoutSizeNode150.pdf"))
+#Plot for the above is made in the next data chunk where edges are also included.
 
 
 PNodeDens <-  Nodesims %>%
     modify_depth(., 1, keep, is.data.frame ) %>%
   flatten %>%
   bind_rows() %>%
-  mutate(PercNum = round(NodesAttacked*100/958))
+  mutate(PercNum = round(NodesAttacked*100/958),
+            LoadDrop = (first(GridLoading)-GridLoading)/first(GridLoading))
 
 test <- PNodeDens %>% group_by(Cascade, NodesAttacked)%>% 
-  summarise(mean = mean(Powerfract),
-            median = median(Powerfract))
+  summarise(mean = mean(Blackout),
+            median = median(Blackout))
+
+x=c(1:958)/958
+target=c(1:15)/100
+targnodes <- target %>% map_dbl(~which(abs(x-.x)==min(abs(x-.x))))
+
 
 PNodeDens %>%
   filter(NodesAttacked %in% targnodes) %>%
   mutate(  PercAttacked= fct_rev(as_factor(paste0(PercNum, "%"))))  %>%
   ggplot(aes(y = PercAttacked)) +
-  geom_density_ridges(aes(x = Powerfract, fill = Cascade), alpha = 0.5) +
+  geom_density_ridges(aes(x = Blackout, fill = Cascade), alpha = 0.5) +
   labs(x = "Blackout size as Percentage of total network", y = "Percent of nodes attacked",
        title = "Change in the distribution of blackout size by nodes attacked")  + 
   scale_x_continuous(labels=scales::percent) 
-ggsave(file.path(FiguresFolder, "BlackoutNodeDens1to15perc.pdf"))
+#ggsave(file.path(FiguresFolder, "BlackoutNodeDens1to15perc.pdf"))
 
 PNodeDens %>%
   filter(NodesAttacked %in% targnodes) %>%
@@ -463,19 +540,33 @@ PNodeDens %>%
   labs(x = "Reduction in GC size", y = "Percent of nodes attacked",
        title = "Change in the distribution of GC size by nodes attacked")  + 
   scale_x_continuous(labels=scales::percent) 
-ggsave(file.path(FiguresFolder, "GCNodeDens1to15perc.pdf"))
+#ggsave(file.path(FiguresFolder, "GCNodeDens1to15perc.pdf"))
 
 PNodeDens %>%
   group_by(Cascade) %>%
-summarise(corre = cor(GCfract, Powerfract))
+summarise(corre = cor(GCfract, Blackout))
 
 PNodeDens %>%
-  ggplot(aes(x= GCfract, Powerfract, colour = Cascade ), alpha = 0.3) + geom_point() +
+  ggplot(aes(x= GCfract, Blackout, colour = Cascade ), alpha = 0.3) + geom_point() +
   coord_cartesian(xlim = c(0,1), ylim= c(0,0.8)) +
   labs(title = "Relationship between Blackout and Giant Component", 
-       x = "Rduction in Giant Component size",
+       x = "Reduction in Giant Component size",
        y ="Blackout as a percentage of total network")
 ggsave(file.path(FiguresFolder, "GCvsBlackoutNodes.pdf"))
+
+
+PNodeDens %>%
+  ggplot(aes(x= LoadDrop, Blackout, colour = Cascade ), alpha = 0.3) + geom_point() +
+  labs(title = "Relationship between Blackout and Giant Component", 
+       x = "Grid Loading",
+       y ="Blackout as a percentage of total network")
+
+
+SummaryofGC %>%
+    ggplot(aes(x= PercNum, y = mLoad, colour = Cascade)) +geom_line() +
+    geom_ribbon(aes(ymin=GL05, ymax=GL95, fill = Cascade), alpha = 0.3) +
+  labs(title = "Mean Network Loading throughout grid attack", x = "Nodes attacked as percentage of grid", y = "Mean Network Load")
+ggsave(file.path(FiguresFolder, "MLoad1to16Perc.pdf"))
 
 ```
 
@@ -491,9 +582,9 @@ set.seed(1234)
 Edges2remove<- ceiling(ecount(gbase)*0.15)
 
 input <- c(TRUE,FALSE)
-
+g <- PowerFlow(gbase, "FECK40")
   Edgesims <- input %>% map(~{ 
-    MonteCarloAttack(gbase, 
+    MonteCarloAttack(g, 
                            simulations = 100,
                            AttackStrategy = RandomAttack,
                            Type = "Fixed",
@@ -501,7 +592,7 @@ input <- c(TRUE,FALSE)
                            TotalAttackRounds = Edges2remove,
                            Target = "Edges",
                            CascadeMode = .x,
-                           cores = 7)
+                           cores = 3)
     
 
     }
@@ -510,29 +601,39 @@ input <- c(TRUE,FALSE)
 
 setwd(basewd)
 saveRDS(Edgesims,"100simulationsRandomAttackto150Edges.rds")
-#Edgesims <- readRDS("100simulationsRandomAttackto30Edges.rds")
+#Edgesims <- readRDS("100simulationsRandomAttackto150Edges.rds")
 
 SummaryofGCEdge <- Edgesims %>%
     modify_depth(., 1, keep, is.data.frame ) %>%
   flatten %>%
   bind_rows() %>% 
-  SummariseMonteCarlo
+  SummariseMonteCarlo  %>%
+  mutate(PercNum = NodesAttacked/1415)
 
 
-SummaryofGCEdge %>%
-ggplot(aes(x= NodesAttacked, y = mean, colour = Cascade)) +geom_line() +
-    geom_ribbon(aes(ymin=GC05, ymax=GC95, fill = Cascade), alpha = 0.3)+
-  labs(title = "Comparing reduction in giant componant size for cascading vs topological edgevattacks" , x = "Number of edges removed from Grid", y = "Reduction in giant componant size")
-ggsave(file.path(FiguresFolder, "GCEdgeRemoval30.pdf"))
+EdgeCollapse <- rbind(SummaryofGCEdge%>%
+  select(PercNum, mean, Cascade, GC05, GC95) %>% mutate(type = "Giant componant size reduction"),
+SummaryofGCEdge %>% 
+  select(PercNum, mPGfract, Cascade, PG05, PG95) %>% mutate(type = "Blackout size") %>%
+  rename(mean = mPGfract, GC05 = PG05, GC95 = PG95)
+) %>% mutate(Target = "Edge")
 
 
-SummaryofGCEdge %>%
-ggplot(aes(x= NodesAttacked, y = mPGfract, colour = Cascade)) +geom_line() +
-      geom_ribbon(aes(ymin=PG05, ymax=PG95, fill = Cascade), alpha = 0.3)+
-      labs(title = "Comparing blackout size cascading vs topological edgevattacks" , x = "Number of edges removed from Grid", y = "Blackout size")
-ggsave(file.path(FiguresFolder, "CapacityEdgeRemoval30.pdf"))
+
+bind_rows(EdgeCollapse, NodeCollapse) %>%
+    ggplot(aes(x= PercNum, y = mean, colour = Cascade)) +geom_line() +
+    geom_ribbon(aes(ymin=GC05, ymax=GC95, fill = Cascade), alpha = 0.3) + 
+  scale_x_continuous(labels=scales::percent) + 
+  scale_y_continuous(labels=scales::percent) +
+  facet_grid(Target~type) +
+  labs(title = "Change in Giant Componant and Blackout size as nodes are attacked" , x = "Percent of elements attacked", y = "Performance drop")
+ggsave(file.path(FiguresFolder, "NodeEdgeCollapse15perc.pdf"))
 
 
+
+x=c(1:ecount(gbase))/ecount(gbase)
+target=c(1:15)/100
+TargEdges <- target %>% map_dbl(~which(abs(x-.x)==min(abs(x-.x))))
 
 PEdgeDens <-  Edgesims %>%
     modify_depth(., 1, keep, is.data.frame ) %>%
@@ -541,19 +642,66 @@ PEdgeDens <-  Edgesims %>%
   mutate(PercNum = round(NodesAttacked*100/ecount(gbase)))
 
 PEdgeDens %>%
-  filter(NodesAttacked %in% targnodes) %>%
+  filter(NodesAttacked %in% TargEdges) %>%
   mutate(  PercAttacked= fct_rev(as_factor(paste0(PercNum, "%"))))  %>%
   ggplot(aes(y = PercAttacked)) +
-  geom_density_ridges(aes(x = Powerfract, fill = Cascade), alpha = 0.5) +
+  geom_density_ridges(aes(x = Blackout, fill = Cascade), alpha = 0.5) +
   labs(x = "Blackout size as Percentage of total network", y = "Percent of nodes attacked",
        title = "Change in the distribution of blackout size by edges attacked")  + 
   scale_x_continuous(labels=scales::percent) 
 
-cor(PEdgeDens$GCfract, PEdgeDens$Powerfract)
+PEdgeDens %>%
+  filter(NodesAttacked %in% TargEdges) %>%
+  mutate(  PercAttacked= fct_rev(as_factor(paste0(PercNum, "%"))))  %>%
+  ggplot(aes(y = PercAttacked)) +
+  geom_density_ridges(aes(x = GCfract, fill = Cascade), alpha = 0.5) +
+  labs(x = "Blackout size as Percentage of total network", y = "Percent of nodes attacked",
+       title = "Change in the distribution of blackout size by edges attacked")  + 
+  scale_x_continuous(labels=scales::percent) 
+
+cor(PEdgeDens$GCfract, PEdgeDens$Blackout)
 
 PEdgeDens %>%
-  ggplot(aes(x= GCfract, Powerfract, colour = Cascade ), alpha = 0.3) + geom_point()+
+  ggplot(aes(x= GCfract, Blackout, colour = Cascade ), alpha = 0.3) + geom_point()+
   coord_cartesian(xlim = c(0,1), ylim= c(0,0.8))
+
+
+test <- bind_rows(PEdgeDens %>%
+filter(NodesAttacked %in% TargEdges) %>%
+  mutate(Target = "Edges"),
+PNodeDens %>%
+  filter(NodesAttacked %in% targnodes) %>%
+  mutate(Target = "Nodes")
+)%>%
+#  filter(PercNum == 10) %>%
+  select(GCfract, Blackout, Cascade, Target, PercNum) %>%
+  gather(., key="Type", value = "value",GCfract, Blackout) %>%
+  mutate(Type = ifelse(Type == "GCfract","Giant componant size reduction", "Blackout size"))
+  
+
+test %>% 
+    filter(PercNum == 10) %>%
+  ggplot(aes(x = value,  fill = Cascade)) +
+  geom_density(alpha = 0.5)  +
+    facet_grid(Target~Type) +
+  scale_x_continuous(labels=scales::percent)  +
+  coord_cartesian(ylim = c(0,15)) +
+  labs(x = "Blackout size as Percentage of total network", y = "Percent of nodes attacked",
+       title = "Change in the distribution of blackout size by edges attacked")
+  ggsave(file.path(FiguresFolder, "NodeEdge15percDe
+                   ns.pdf"))
+  
+  
+  
+ test   %>%
+  mutate(  PercAttacked= fct_rev(as_factor(paste0(PercNum, "%"))))  %>%
+  ggplot(aes(y = PercAttacked)) +
+  geom_density_ridges(aes(x = value, fill = Cascade), alpha = 0.5)  + 
+  scale_x_continuous(labels=scales::percent)  +
+      facet_grid(Target~Type) +
+  labs(x = "Performance drop", y = "Percent of elements attacked",
+       title = "Change in the performance distribution as number of attacks increase") 
+  ggsave(file.path(FiguresFolder, "NodeEdge15percDens4Way.pdf"))  
 
 ```
 
@@ -588,9 +736,9 @@ CheckCollapse[[31]][[1]] %>%
 test <-  ExtractNetworkStats(CheckCollapse) 
  
 ChangeInNet <- CheckCollapse %>% squash %>% map_dbl(~Net_Ability(.x,gbase))
-
+a
  test %>%
-   ggplot(aes(x=NodesAttacked, y = Powerfract)) + geom_line()
+   ggplot(aes(x=NodesAttacked, y = Blackout)) + geom_line()
 
  CreateCascadeGif(CheckCollapse)
 
@@ -622,8 +770,64 @@ CreateCascadeGif(CheckCollapse)
 
 ```
 
+#Load Level
 
-Who researched what equations
+Calculating the load level for the base case and looking at the distribution across lines
+
+```{r}
+
+g <- PowerFlow(gbase, "FECK40")
+
+LoadAnalysis <- LoadLevel(g)
+
+
+
+LL<- mean(LoadAnalysis$LineLoading[LoadAnalysis$Line.Limit!=100000])
+
+1/LL
+
+median(LoadAnalysis$LineLoading[LoadAnalysis$Line.Limit!=100000])
+
+LoadAnalysis %>%
+  filter(Line.Limit != 100000) %>%
+  ggplot(aes(x= LineLoading)) + geom_histogram(aes(y = (..count..)/sum(..count..)), bins = 20) +
+  labs(title = "Loading Level for base case profile", x = "Loading of maximum line limit as percent",
+       y = "Percent of edges")+
+  scale_x_continuous(labels=scales::percent, breaks = seq(0,1,0.1)) +
+  scale_y_continuous(labels = scales::percent)+
+  annotate("text", x = 0.7, y = 0.10, label = paste0("Mean Load Level ", round(LL*100), "%"), size = 10)+
+  coord_cartesian(ylim = c(0,.15))
+
+  ggsave(file.path(FiguresFolder, "LoadLevelHisto.pdf"))  
+
+  
+LoadAnalysis %>%
+  mutate(LineLoading = ifelse(Line.Limit==100000, NA, LineLoading))  %>%
+  #filter(Line.Limit != 100000) %>%
+  ggplot(aes(x= LineLoading)) +geom_density()  +
+  scale_x_log10()
+
+
+E(g)$Loading <- get.edge.attribute(g, "Link.Limit")/abs(get.edge.attribute(g, "PowerFlow"))
+
+g1<-g
+E(g1)$AbsFlow <- abs(get.edge.attribute(g1, "PowerFlow"))
+
+test <- data.frame(EntLim = EntropicDegree(g), 
+                   EntLoad = EntropicDegree(g, value = "Loading"),
+                   EntFlow = EntropicDegree(g1, value = "AbsFlow"))
+
+#one third of rows removed due to non-finite values
+test %>% gather%>%
+  ggplot(aes(x= value, fill = key)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10()
+
+```
+
+
+#Who researched what equations
+This code chunk is used to show the change from topological to extended topological
 ```{r}
 TypeYear<- bind_rows(
 data_frame(type = "Topo", year = c(2000,2002,2004,2004,2005,2007,2008,2006,2005,2007,2007,2004,2005,2009,2010,2009,2012,2007,2011,2004,2005)),
@@ -648,6 +852,68 @@ TypeYear %>% filter(type != "Extended") %>%
 
 TypeYear %>%
   ggplot(aes(x= year, fill = Type)) + geom_freqpoly()
+
+```
+
+
+#Plots for the upgrade presentation
+
+##SCALE FREE NETWORK AND POWER LAW PLOT
+```{r}
+setwd(basewd)
+g <- sample_fitness_pl(1000, 500, 2, -1)
+g <- delete.vertices(g, degree(g)==0)
+
+components(g)
+
+g <- delete.vertices(g, components(g)$membership!=which.max(components(g)$csize))
+
+
+plot(g)
+write_graph(g, "scale free.graphml" , "graphml")
+g2 <- sample_fitness_pl(10000, 10000, Inf, -1)
+g2 <- delete.vertices(g2, degree(g2)==0)
+
+df <- data.frame(values =degree(g2), metric = "Degree") 
+
+df%>%
+ggPowerLaw() + 
+  labs(title = "Power Law distribution")
+
+      df2 <- df %>% filter(metric == 1)
+      
+      PL = df2$values %>% conpl$new(.)
+      est = estimate_xmin(PL)
+      PL$setXmin(est)
+ggsave("PowerLawDistrib.pdf")
+
+```
+
+##LATTICE NETWORK and regular
+
+```{r}
+lat <- make_lattice(length = 5, dim = 2)
+
+plot(lat)
+write_graph(lat, "lattice.graphml" , "graphml")
+
+random_lat <- sample_gnm(25, 40)
+plot(random_lat)
+write_graph(random_lat, "random_lattice.graphml" , "graphml")
+```
+
+##Uniform distribution
+
+```{r}
+
+data.frame(x = 1:20, y = rep(0.1, 20)) %>%
+  ggplot(., aes(x= x, y = y)) +
+  geom_col()+
+  #geom_ribbon(aes(ymin = 0, ymax = y)) +
+  coord_cartesian(xlim = c(0,20), ylim = c(0,0.15)) +
+  labs(title = "Loading per line across network", x = "Line ID") +
+  scale_y_continuous(name = paste0("Percentage Loading " ), labels = expression(frac(1,alpha)), breaks = 0.1)
+ggsave("Uniform_Loading.pdf")
 
 ```
 

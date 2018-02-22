@@ -45,6 +45,8 @@ Cascade <- function(NetworkList, Iteration = 0, StopCascade = Inf){
      NetworkList <- Cascade(NetworkList, Iteration, StopCascade)
     }
   
+    NetworkList[[length(NetworkList)]] <- g2
+    
     print(paste("Cascade has completed with", Iteration, "iterations"))
     
   return(NetworkList)
